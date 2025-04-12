@@ -1,9 +1,12 @@
 import streamlit as st
 import pandas as pd
-import requests  # For calling webhooks
+import requests
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
-# Load the dataset (replace 'dataset.csv' with your file path)
+# Load the dataset
 df = pd.read_csv('dataset.csv')
+
+st.set_page_config(layout="wide")
 
 # Function to call the webhook for LLM improvement
 def improve_with_llm(data):
@@ -13,67 +16,89 @@ def improve_with_llm(data):
     """
     try:
         response = requests.post('http://your-webhook-url.com/improve', json=data)
-        response.raise_for_status()  # Raise an error for bad status codes
+        response.raise_for_status()
         return response.json()  # Expecting {'improved_question': '...'} or similar
     except Exception as e:
         st.error(f"Webhook error: {e}")
         return None
 
-# --- Sidebar for Filters ---
-st.sidebar.header("Filters")
-
-# Filter by dataset_id
-dataset_ids = df['dataset_id'].unique()
-selected_dataset_ids = st.sidebar.multiselect("Dataset ID", dataset_ids, default=dataset_ids)
-
-# Filter by dataset_name
-dataset_names = df['dataset_name'].unique()
-selected_dataset_names = st.sidebar.multiselect("Dataset Name", dataset_names, default=dataset_names)
-
-# Filter by document_id
-document_ids = df['document_id'].unique()
-selected_document_ids = st.sidebar.multiselect("Document ID", document_ids, default=document_ids)
-
-# Filter by document_name
-document_names = df['document_name'].unique()
-selected_document_names = st.sidebar.multiselect("Document Name", document_names, default=document_names)
-
-# Filter by chunk_id
-chunk_ids = df['chunk_id'].unique()
-selected_chunk_ids = st.sidebar.multiselect("Chunk ID", chunk_ids, default=chunk_ids)
-
-# Filter by chunk_keyword (keyword search)
-chunk_keyword_filter = st.sidebar.text_input("Chunk Keyword Search", "")
-
-# Apply filters to the dataframe
-filtered_df = df[
-    (df['dataset_id'].isin(selected_dataset_ids)) &
-    (df['dataset_name'].isin(selected_dataset_names)) &
-    (df['document_id'].isin(selected_document_ids)) &
-    (df['document_name'].isin(selected_document_names)) &
-    (df['chunk_id'].isin(selected_chunk_ids)) &
-    (df['chunk_keyword'].str.contains(chunk_keyword_filter, case=False, na=False))
-]
-
 # --- Main Interface ---
 st.header("Benchmarking Dataset")
 
-# Display the filtered dataframe with multi-row selection
-# Note: 'selection_mode' is experimental; adjust if unstable in your Streamlit version
-selected_rows = st.dataframe(
-    filtered_df,
-    use_container_width=True,
-    selection_mode="multi-row",
-    key="data_table"
-).selection["rows"]  # Returns indices of selected rows
+# Configure AgGrid options for the table
+gb = GridOptionsBuilder.from_dataframe(df)
+gb.configure_selection('multiple', use_checkbox=True, groupSelectsChildren=True)
+gb.configure_pagination(enabled=True, paginationPageSize=20)  # Increased page size
+gb.configure_grid_options(domLayout='normal')
+
+# Configure columns to show all data
+gb.configure_default_column(resizable=True, sortable=True, filter=True, wrapText=True, autoHeight=True)
+# Set specific widths for key columns to ensure readability
+gb.configure_column('dataset_id', width=100)
+gb.configure_column('dataset_name', width=150)
+gb.configure_column('document_id', width=100)
+gb.configure_column('document_name', width=150)
+gb.configure_column('chunk_id', width=100)
+gb.configure_column('chunk_keyword', width=150)
+gb.configure_column('question', width=250, wrapText=True)
+gb.configure_column('direct_answer', width=250, wrapText=True)
+gb.configure_column('context', width=250, wrapText=True)
+gb.configure_column('retrieved_chunks_1', width=100)
+gb.configure_column('retrieved_chunks_2', width=100)
+gb.configure_column('retrieved_chunks_3', width=100)
+gb.configure_column('retrieved_chunks_4', width=100)
+gb.configure_column('retrieved_chunks_5', width=100)
+gb.configure_column('augmented_answer', width=300, wrapText=True)
+
+grid_options = gb.build()
+
+# Custom CSS to adjust table width
+st.markdown("""
+    <style>
+    .ag-root-wrapper {
+        width: 100% !important;
+        max-width: 100% !important;
+        margin: 0 auto;
+    }
+    .ag-header {
+        width: 100% !important;
+    }
+    .ag-body-viewport {
+        width: 100% !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Display the interactive table
+st.write("Select rows to edit:")
+grid_response = AgGrid(
+    df,
+    gridOptions=grid_options,
+    update_mode=GridUpdateMode.SELECTION_CHANGED,
+    allow_unsafe_jscode=True,
+    height=600,
+    fit_columns_on_grid_load=False,
+    theme='streamlit'
+)
+
+# Get selected rows
+selected_rows = []
+if grid_response is not None:  # Added check for None
+    selected_rows = grid_response['selected_rows']
+    if selected_rows is None:
+        selected_rows = []
+selected_indices = []
+if len(selected_rows) > 0:
+    selected_df = pd.DataFrame(selected_rows)
+    selected_indices = df[df['chunk_id'].isin(selected_df['chunk_id'])].index.tolist()
 
 # --- Handle Selected Rows ---
-if selected_rows:
+if selected_indices:
     st.header("Edit Selected Rows")
-    selected_df = filtered_df.iloc[selected_rows]  # Subset of selected rows
+    selected_df = df.loc[selected_indices]
     
-    for idx in selected_rows:
-        row = filtered_df.iloc[idx - selected_rows[0]]  # Adjust index for display
+    for idx in selected_indices:
+        row = df.loc[idx]
         st.subheader(f"Row {idx}")
         
         # Manual editing for the question
@@ -85,7 +110,6 @@ if selected_rows:
         
         # Button to improve with LLM
         if st.button("Improve with LLM", key=f"llm_{idx}"):
-            # Prepare data for webhook (customize based on your needs)
             data_to_improve = {
                 "question": row['question'],
                 "context": row['context'],
@@ -96,11 +120,11 @@ if selected_rows:
                 df.at[idx, 'question'] = improved_data['improved_question']
                 st.success(f"Row {idx} updated with LLM response")
         
-        st.write("---")  # Separator between rows
+        st.write("---")
 
     # Apply manual changes to all selected rows
     if st.button("Apply Manual Changes"):
-        for idx in selected_rows:
+        for idx in selected_indices:
             df.at[idx, 'question'] = st.session_state[f"question_{idx}"]
         st.success("Manual changes applied to selected rows")
 
@@ -109,6 +133,6 @@ if st.button("Save Dataset"):
     df.to_csv('dataset.csv', index=False)
     st.success("Dataset saved successfully")
 
-# Display the full dataset (optional, for reference)
+# Display the full dataset (optional)
 with st.expander("View Full Dataset"):
     st.dataframe(df)
